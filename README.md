@@ -22,12 +22,12 @@ TIMER(barTimer, "description for bar timer")
 // custom user stats takes a function(typically lambda) so that you can include your own stats.
 STAT(myRate, []() {
  auto num = fooTimer.stat().cycles;
- auto den = num + BarTimer.stat().cycles;
+ auto den = num + barTimer.stat().cycles;
  return std::to_string(double(num) / den);
 })
 
 void doTimeConsumingStuff() {
-  std::this_thread_sleep_for(std::chrono_milliseconds(10));
+  std::this_thread::sleep_for(std::chrono_milliseconds(10));
 }
 
 void doMisc() {
