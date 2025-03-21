@@ -73,6 +73,12 @@ int main(void) {
 ```
 </details>
 
+<details>
+<summary>Useful references</summary>
+
+* [Common pitfalls of rdtsc](https://zhuanlan.zhihu.com/p/414698448)
+</details>
+
 ## `args.h`
 
 A command line argument parser. Support all primitives, strings & enums, fully declarative & constexpr.
