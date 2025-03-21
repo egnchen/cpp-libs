@@ -1,7 +1,7 @@
 # cpp-libs
 My header-only cpp libraries
 
-These headers are C++17 compliant handly libraries written by me. If you want to use those, just copy the header file, include it and you're good to go.
+These headers are C++17 compliant handy libraries written by me. If you want to use those, just copy the header file, include it and you're good to go.
 
 ## `hwstat.h`
 
@@ -75,7 +75,80 @@ int main(void) {
 
 ## `args.h`
 
-A command line argument parser. Support all primitives and enums, fully declarative & constexpr.
+A command line argument parser. Support all primitives, strings & enums, fully declarative & constexpr.
+
+<details>
+<summary>Usage</summary>
+
+```cpp
+
+enum class TestType {
+  Seq,
+  Rnd,
+};
+
+struct Config {
+  TestType test_type;
+  unsigned thread_cnt;
+  size_t blk_sz;
+  size_t mem_sz;
+  int test_cnt;
+} conf;
+
+static arg::Parser parser{
+    arg::EnumArg<TestType>('t', conf.test_type, "type", TestType::Seq,
+                           "type of test"),
+    arg::UIntArg('j', conf.thread_cnt, "thread-cnt", 1, "number of threads"),
+    arg::SizeArg('s', conf.mem_sz, "memory-size", 1UL * GB,
+                 "total memory size"),
+    arg::SizeArg('b', conf.blk_sz, "block-size", 256UL, "block size, 64B ~ 16K, power of 2"),
+    arg::IntArg('c', conf.test_cnt, "test-count", 50,
+                "total number of cycles to run"),
+};
+
+int main(int argc, const char *argv[]) {
+  try {
+    parser.parse(argc, argv);
+    parser.printAll(std::cout);
+  } catch (std::exception &e) {
+    std::cerr << e.what() << std::endl;
+    parser.usage(std::cerr, argv[0]);
+    exit(EXIT_FAILURE);
+  }
+
+  // ...run your program
+  return 0;
+}
+
+```
+
+Example output:
+```bash
+$ ./example -h
+Usage: ./example
+  -t(--type) [default = Seq]
+        type of test
+  -j(--thread-cnt) [default = 1]
+        number of threads
+  -s(--memory-size) [default = 1GB]
+        total memory size
+  -b(--block-size) [default = 256B]
+        block size, 64B ~ 16K, power of 2
+  -c(--test-count) [default = 50]
+        total number of cycles to run
+  -h(--help)
+        print this help message
+```
+```bash
+$ ./example -t rnd -c 10 -b 2K
+values:
+  -t(--type)    Rnd
+  -j(--thread-cnt)      4
+  -s(--memory-size)     1GB
+  -b(--block-size)      2KB
+  -c(--test-count)      10
+```
+</details>
 
 ## `thread_pool.h`
 
