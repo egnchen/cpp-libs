@@ -3,7 +3,6 @@
 #include <charconv>
 #include <cstdlib>
 #include <cstring>
-#include <initializer_list>
 #include <iomanip>
 #include <iostream>
 #include <optional>
@@ -26,114 +25,27 @@ inline std::string strToLower(std::string_view str) {
   return ret;
 }
 
+inline constexpr bool isFlag(const char *str) { return str && str[0] == '-'; }
+
 inline constexpr bool lowerCmp(std::string_view sv1, std::string_view sv2) {
-  return std::equal(sv1.begin(), sv1.end(), sv2.begin(), sv2.end(), [](char a, char b) {
-    return std::tolower(a) == std::tolower(b);
-  });
+  return std::equal(
+      sv1.begin(), sv1.end(), sv2.begin(), sv2.end(),
+      [](char a, char b) { return std::tolower(a) == std::tolower(b); });
 }
 
-} // namespace
-
-struct Arg {
-  using ParserType = bool (*)(const Arg &arg, const char *value,
-                              bool useDefault);
-  using FormatterType = void (*)(const Arg &arg, std::ostream &os,
-                                 bool printDefault);
-  char shortFlag;
-  bool hasDefault = false;
-  const char *longFlag = nullptr;
-  void *dst = nullptr;
-  char defaultStorage[sizeof(uint64_t)] = {0};
-  const char *desc = nullptr;
-  ParserType parser;
-  FormatterType formatter;
-  // default value storage
-
-  std::runtime_error formatError(std::string_view msg) const {
-    std::stringstream ss;
-    ss << "Error when parsing " << getFlag() << ": " << msg;
-    return std::runtime_error(ss.str());
-  }
-
-  std::runtime_error formatError(std::string_view msg,
-                                 std::string_view val) const {
-    std::stringstream ss;
-    ss << "Error when parsing '" << val << "' for " << getFlag() << ": " << msg;
-    return std::runtime_error(ss.str());
-  }
-
-public:
-  template <typename T>
-  std::enable_if_t<sizeof(T) <= sizeof(defaultStorage), T &> getDefault() {
-    return *reinterpret_cast<T *>(defaultStorage);
-  }
-  template <typename T>
-  std::enable_if_t<sizeof(T) <= sizeof(defaultStorage), const T &>
-  getDefault() const {
-    return *reinterpret_cast<const T *>(defaultStorage);
-  }
-  std::string getFlag() const {
-    if (shortFlag) {
-      return std::string{"-"} + shortFlag;
-    } else {
-      return std::string("--") + longFlag;
-    }
-  }
-  void parseValue(const char *value) const {
-    if (!parser(*this, value, false)) {
-      throw formatError("failed to parse value", value);
-    }
-  }
-  void setDefault() const {
-    if (!hasDefault) {
-      throw formatError("does not have a default value");
-    }
-    if (!parser(*this, nullptr, true)) {
-      throw formatError("failed to set default value");
-    }
-  }
-  void printVal(std::ostream &os) const { formatter(*this, os, false); }
-
-  void usage(std::ostream &out) const {
-    if (shortFlag) {
-      out << "  -" << shortFlag;
-      if (!strEmpty(longFlag)) {
-        out << "(--" << longFlag << ')';
-      }
-    } else {
-      out << "  --" << longFlag;
-    }
-    if (hasDefault) {
-      out << " [default = ";
-      formatter(*this, out, true);
-      out << "]\n";
-    } else {
-      out << " [required]\n";
-    }
-    if (desc) {
-      out << '\t' << desc << '\n';
-    }
-  }
-};
-
-namespace {
-
 template <typename T>
-inline std::enable_if_t<std::is_arithmetic_v<T>, bool>
-numericParser(const Arg &arg, const char *value, bool useDefault) {
+std::enable_if_t<std::is_arithmetic_v<T>, std::optional<T>>
+numericParser(const char *value) {
   static constexpr size_t kMaxArgLen = 128UL;
   T result;
   if (strEmpty(value)) {
-    if (!useDefault) {
-      return false;
-    }
-    result = arg.getDefault<T>();
+    return {};
   } else {
     if constexpr (std::is_integral_v<T>) {
       auto [ptr, ec] =
           std::from_chars(value, value + strnlen(value, kMaxArgLen), result);
       if (ec != std::errc()) {
-        return false;
+        return {};
       }
     } else {
       // older compilers' implementation of std::from_chars does not support
@@ -147,38 +59,19 @@ numericParser(const Arg &arg, const char *value, bool useDefault) {
         result = strtold(value, &valEnd);
       }
       if (value == valEnd) {
-        return false;
+        return {};
       }
     }
   }
-  *static_cast<T *>(arg.dst) = result;
-  return true;
+  return result;
 }
 
 template <typename T>
-inline void genericFormatter(const Arg &arg, std::ostream &os,
-                             bool printDefault) {
-  if (printDefault) {
-    // special handling for string default
-    if constexpr (std::is_same_v<T, std::string>) {
-      os << arg.getDefault<const char *>();
-    } else {
-      os << arg.getDefault<T>();
-    }
-  } else {
-    os << *static_cast<const T *>(arg.dst);
-  }
-}
-
-template <typename T>
-inline std::enable_if_t<std::is_integral_v<T>, bool>
-sizeParser(const Arg &arg, const char *value, bool useDefault) {
+std::enable_if_t<std::is_integral_v<T>, std::optional<T>>
+sizeParser(const char *value) {
   T result = 0;
   if (strEmpty(value)) {
-    if (!useDefault) {
-      return false;
-    }
-    result = arg.getDefault<T>();
+    return {};
   } else {
     std::string v = strToLower(value);
 
@@ -192,7 +85,7 @@ sizeParser(const Arg &arg, const char *value, bool useDefault) {
     char *vEnd = v.data() + pos;
     double base = strtod(v.data(), &vEnd);
     if (v.data() == vEnd) {
-      return false;
+      return {};
     }
 
     // Apply multiplier based on suffix
@@ -208,22 +101,19 @@ sizeParser(const Arg &arg, const char *value, bool useDefault) {
     } else if (suffix.empty() || v.ends_with("b")) {
       result = static_cast<T>(base);
     } else {
-      return false;
+      return {};
     }
   }
-  *static_cast<T *>(arg.dst) = result;
-  return true;
+  return result;
 }
 
 template <typename T>
-inline std::enable_if_t<std::is_integral_v<T>, void>
-sizeFormatter(const Arg &arg, std::ostream &os, bool printDefault) {
+std::enable_if_t<std::is_integral_v<T>, void> sizeFormatter(std::ostream &os,
+                                                            const T &val) {
   // Format file size with appropriate suffix based on magnitude
-  const T *source =
-      static_cast<const T *>(printDefault ? arg.defaultStorage : arg.dst);
 
   // Use double for division to preserve precision
-  double size = static_cast<double>(*source);
+  double size = static_cast<double>(val);
 
   // Find appropriate suffix by dividing by 1024 until small enough
   const char *suffixes[] = {"B", "KB", "MB", "GB", "TB"};
@@ -243,15 +133,11 @@ sizeFormatter(const Arg &arg, std::ostream &os, bool printDefault) {
   os << suffixes[suffix_idx];
 }
 
-inline bool boolParser(const Arg &arg, const char *value, bool useDefault) {
+std::optional<bool> boolParser(const char *value) {
   bool result;
-  if (!value) {
-    if (useDefault) {
-      result = arg.getDefault<bool>();
-    } else {
-      // only flag and no value means setting the value to true
-      result = true;
-    }
+  if (strEmpty(value)) {
+    // no value means the value is set
+    return true;
   } else {
     std::string v = strToLower(value);
     if (v == "1" || v == "yes" || v == "y" || v == "true") {
@@ -259,42 +145,23 @@ inline bool boolParser(const Arg &arg, const char *value, bool useDefault) {
     } else if (v == "0" || v == "no" || v == "n" || v == "false") {
       result = false;
     } else {
-      return false;
+      return {};
     }
   }
-  *static_cast<bool *>(arg.dst) = result;
-  return true;
+  return result;
 }
 
-inline void boolFormatter(const Arg &arg, std::ostream &os, bool printDefault) {
-  const bool &source = printDefault ? arg.getDefault<bool>()
-                                    : *static_cast<const bool *>(arg.dst);
-  os << (source ? "true" : "false");
+void boolFormatter(std::ostream &os, const bool &val) {
+  os << (val ? "true" : "false");
 }
 
-inline bool charParser(const Arg &arg, const char *value, bool useDefault) {
-  if (strEmpty(value)) {
-    if (!useDefault) {
-      return false;
-    }
-    *static_cast<char *>(arg.dst) = arg.getDefault<char>();
-  } else {
-    *static_cast<char *>(arg.dst) = value[0];
-  }
-  return true;
+std::optional<char> charParser(const char *value) {
+  return strEmpty(value) ? std::optional<char>{} : value[0];
 }
 
-inline bool strParser(const Arg &arg, const char *value, bool useDefault) {
-  if (strEmpty(value)) {
-    if (!useDefault) {
-      return false;
-    }
-    *static_cast<std::string *>(arg.dst) = arg.getDefault<const char *>();
-  } else {
-    *static_cast<std::string *>(arg.dst) = value;
-  }
-  return true;
-}
+std::optional<std::string> strParser(const char *value) {
+  return strEmpty(value) ? std::optional<std::string>{} : value;
+};
 
 template <typename E, E V>
 consteval std::optional<std::string_view> enumToString() {
@@ -337,7 +204,7 @@ consteval auto enumLookupTableImpl(std::index_sequence<Vs...> seq) {
       result{};
   size_t index = 0;
   ((enumToString<E, static_cast<E>(Vs)>().has_value()
-        // for older compiler versions operator= for std::pair is not constexpr 
+        // for older compiler versions operator= for std::pair is not constexpr
         ? (result[index].first = enumToString<E, static_cast<E>(Vs)>().value(),
            result[index].second = static_cast<E>(Vs), index++, 0)
         : 0),
@@ -349,189 +216,354 @@ template <typename E, size_t BSize = 64> consteval auto enumLookupTable() {
   return enumLookupTableImpl<E>(std::make_index_sequence<BSize>());
 }
 
-template <typename E>
-inline std::enable_if_t<std::is_enum_v<E>, bool>
-enumParser(const Arg &arg, const char *value, bool useDefault) {
+template <typename E, size_t BSize = 64>
+std::enable_if_t<std::is_enum_v<E>, std::optional<E>>
+enumParser(const char *value) {
   constexpr size_t kMaxArgLen = 16;
   if (strEmpty(value)) {
-    if (!useDefault) {
-      return false;
-    }
-    *static_cast<E *>(arg.dst) = arg.getDefault<E>();
-    return true;
+    return {};
   } else {
     // parse numeric value
     std::underlying_type_t<E> result;
     auto [ptr, ec] =
         std::from_chars(value, value + strnlen(value, kMaxArgLen), result);
     if (ec == std::errc()) {
-      const auto &validSet = enumValidSet<E>();
-      if (result < validSet.size() && enumValidSet<E>()[result]) {
-        *static_cast<E *>(arg.dst) = static_cast<E>(result);
-        return true;
+      const auto &validSet = enumValidSet<E, BSize>();
+      if (static_cast<size_t>(result) < validSet.size() &&
+          enumValidSet<E>()[result]) {
+        return static_cast<E>(result);
       }
-      return false;
+      return {};
     }
     // parse string value
-    for (const auto &p : enumLookupTable<E>()) {
+    for (const auto &p : enumLookupTable<E, BSize>()) {
       if (lowerCmp(p.first, value)) {
-        *static_cast<E *>(arg.dst) = p.second;
-        return true;
+        return p.second;
       }
     }
-    return false;
+    return {};
   }
 }
 
-template <typename E>
-inline std::enable_if_t<std::is_enum_v<E>, void>
-enumFormatter(const Arg &arg, std::ostream &os, bool printDefault) {
-  const E &source =
-      printDefault ? arg.getDefault<E>() : *static_cast<const E *>(arg.dst);
-  for (const auto &p : enumLookupTable<E>()) {
-    if (p.second == source) {
+template <typename E, size_t BSize = 64>
+std::enable_if_t<std::is_enum_v<E>, void> enumFormatter(std::ostream &os,
+                                                        const E &val) {
+  for (const auto &p : enumLookupTable<E, BSize>()) {
+    if (p.second == val) {
       os << p.first;
       return;
     }
   }
-  os << std::underlying_type_t<E>(source);
+  os << std::underlying_type_t<E>(val);
 }
+
+template <typename T> void genericFormatter(std::ostream &os, const T &val) {
+  os << val;
+}
+
 } // namespace
 
-#define DEFINE_ARG(_name, _type, _deftype, _parser, _formatter)                \
-  inline constexpr Arg _name##Arg(                                             \
-      char shortFlag, _type &dst, const char *longFlag = nullptr,              \
-      std::optional<_deftype> defVal = std::nullopt,                           \
-      const char *desc = nullptr) {                                            \
-    Arg ret{.shortFlag = shortFlag,                                            \
-            .hasDefault = defVal.has_value(),                                  \
-            .longFlag = longFlag,                                              \
-            .dst = static_cast<void *>(&dst),                                  \
-            .desc = desc,                                                      \
-            .parser = _parser,                                                 \
-            .formatter = _formatter};                                          \
-    if (defVal.has_value()) {                                                  \
-      ret.getDefault<_deftype>() = *defVal;                                    \
-    }                                                                          \
-    return ret;                                                                \
-  };
+struct ArgBase {
+  char shortFlag;
+  bool hasDefault;
+  void *dst;
+  const char *longFlag = nullptr;
+  const char *desc = nullptr;
 
-#define NARG(_name, _type)                                                     \
-  DEFINE_ARG(_name, _type, _type, numericParser<_type>, genericFormatter<_type>)
+  ArgBase(char shortFlag, bool hasDefault, void *dst,
+          const char *longFlag = nullptr, const char *desc = nullptr)
+      : shortFlag(shortFlag), hasDefault(hasDefault), dst(dst),
+        longFlag(longFlag), desc(desc) {
+    if (dst == nullptr) {
+      std::stringstream ss;
+      ss << "dst for ";
+      printFlag(ss);
+      ss << " not specified";
+      throw std::runtime_error(ss.str());
+    }
+  }
+  virtual ~ArgBase() {}
 
-NARG(Int8, int8_t)
-NARG(Int16, int16_t)
-NARG(Int, int32_t)
-NARG(Int64, int64_t)
-NARG(UInt8, uint8_t)
-NARG(UInt16, uint16_t)
-NARG(UInt, uint32_t)
-NARG(UInt64, uint64_t)
-NARG(Float, float)
-NARG(Double, double)
+  template <typename T> T *getDst() const { return reinterpret_cast<T *>(dst); }
+  virtual void parseValue(const char *) = 0;
+  virtual void formatValue(std::ostream &) const = 0;
+  virtual void setDefault() {
+    if (!hasDefault) {
+      std::stringstream ss;
+      ss << "cannot set default for ";
+      printFlag(ss);
+      ss << "(value required)";
+      throw std::runtime_error(ss.str());
+    }
+  }
+  virtual void usage(std::ostream &) const = 0;
 
-#undef NARG
+  void printFlag(std::ostream &os) const {
+    if (shortFlag) {
+      os << "  -" << shortFlag;
+      if (!strEmpty(longFlag)) {
+        os << "(--" << longFlag << ')';
+      }
+    } else {
+      os << "  --" << longFlag;
+    }
+  }
+  void printDesc(std::ostream &os) const {
+    if (desc) {
+      os << '\t' << desc << '\n';
+    }
+  }
+};
 
-DEFINE_ARG(Bool, bool, bool, boolParser, boolFormatter)
-DEFINE_ARG(Char, char, char, charParser, genericFormatter<char>)
-DEFINE_ARG(String, std::string, const char *, strParser,
-           genericFormatter<std::string>)
-DEFINE_ARG(Size, uint64_t, uint64_t, sizeParser<uint64_t>,
-           sizeFormatter<uint64_t>)
-template <typename E>
-DEFINE_ARG(Enum, E, E, enumParser<E>, enumFormatter<E>)
+template <typename T> struct Arg : public ArgBase {
+  T defVal;
+  Arg(char shortFlag, T &dst, const char *longFlag,
+      std::optional<T> defVal = std::nullopt, const char *desc = nullptr)
+      : ArgBase(shortFlag, defVal.has_value(), static_cast<void *>(&dst),
+                longFlag, desc) {
+    if (defVal.has_value())
+      this->defVal = *defVal;
+  }
 
-#undef DEFINE_ARG
+private:
+  void doFormat(std::ostream &os, const T &val) const {
+    if constexpr (std::is_enum_v<T>) {
+      enumFormatter(os, val);
+    } else if constexpr (std::is_same_v<bool, T>) {
+      boolFormatter(os, val);
+    } else {
+      genericFormatter(os, val);
+    }
+  }
 
-class Parser {
 public:
-  static constexpr char kHelpFlag[] = "-h";
-  static constexpr char kHelpLongFlag[] = "--help";
-  Parser(std::initializer_list<Arg> args) : args(args) {}
-  void parse(int argc, const char *argv[]) {
-    std::vector<unsigned char> parsed(args.size(), false);
-    // skip first argument if it's not a flag(possibly application name)
-    for (int i = isFlag(argv[0]) ? 0 : 1; i < argc; i++) {
-      if (!isFlag(argv[i])) {
-        throw std::invalid_argument(
-            std::string("Parsing error: invalid argument ") + argv[i]);
-      }
-
-      auto it = args.cend();
-      if (argv[i][1] == '-') {
-        // long flag handling
-        const char *longFlag = argv[i] + 2;
-        it = std::find_if(args.begin(), args.end(), [=](const Arg &arg) {
-          return arg.longFlag && arg.longFlag == longFlag;
-        });
+  virtual void parseValue(const char *value) override {
+    try {
+      if constexpr (std::is_same_v<T, bool>) {
+        *getDst<T>() = boolParser(value).value();
+      } else if constexpr (std::is_arithmetic_v<T>) {
+        *getDst<T>() = numericParser<T>(value).value();
+      } else if constexpr (std::is_enum_v<T>) {
+        *getDst<T>() = enumParser<T>(value).value();
+      } else if constexpr (std::is_same_v<T, char>) {
+        *getDst<T>() = charParser(value).value();
+      } else if constexpr (std::is_same_v<T, std::string>) {
+        *getDst<T>() = strParser(value).value();
       } else {
-        // short flag handling
-        char shortFlag = argv[i][1];
-        it = std::find_if(args.begin(), args.end(), [=](const Arg &arg) {
-          return arg.shortFlag && arg.shortFlag == shortFlag;
-        });
+        static_assert(sizeof(T), "no default parser for type");
       }
-      if (it == args.cend()) {
+    } catch (const std::bad_optional_access &e) {
+      std::cerr << "Failed to parse argument ";
+      printFlag(std::cerr);
+      std::cerr << "\n" << "Argument value: " << value << std::endl;
+    }
+  }
+
+  virtual void setDefault() override {
+    ArgBase::setDefault();
+    *getDst<T>() = defVal;
+  }
+
+  virtual void formatValue(std::ostream &os) const override {
+    doFormat(os, *getDst<T>());
+  }
+
+  virtual void usage(std::ostream &os) const override {
+    printFlag(os);
+    if (hasDefault) {
+      os << " [default = ";
+      doFormat(os, defVal);
+      os << "]\n";
+    } else {
+      os << " [required]\n";
+    }
+    if constexpr (std::is_enum_v<T>) {
+      os << "possible values: ";
+      bool first = true;
+      for (const auto &kv : enumLookupTable<T>()) {
+        if (!first) {
+          os << ", ";
+        }
+        os << kv.first << "("
+           << static_cast<std::underlying_type_t<T>>(kv.second) << ")";
+        first = false;
+      }
+      os << "\n";
+    }
+    printDesc(os);
+  }
+};
+
+template <typename T>
+Arg(char, T &, const char *, std::nullopt_t, const char * = nullptr)
+    -> Arg<std::decay_t<T>>;
+
+Arg(char, std::string &, const char *, const char *, const char * = nullptr)
+    -> Arg<std::string>;
+
+// Deduction guide for Arg<T> when defVal is provided as T directly
+template <typename T>
+Arg(char, T &, const char *, T, const char * = nullptr) -> Arg<std::decay_t<T>>;
+
+template <typename T> struct SizeArg : public Arg<T> {
+  static_assert(std::is_integral_v<T>);
+  SizeArg(char shortFlag, T &dst, const char *longFlag,
+          std::optional<T> defVal = std::nullopt, const char *desc = nullptr)
+      : Arg<T>(shortFlag, dst, longFlag, defVal, desc) {}
+
+  void parseValue(const char *value) override {
+    try {
+      *ArgBase::getDst<T>() = sizeParser<T>(value).value();
+    } catch (const std::bad_optional_access &e) {
+      std::cerr << "Failed to parse argument ";
+      ArgBase::printFlag(std::cerr);
+      std::cerr << "\n" << "Argument value: " << value << std::endl;
+    }
+  }
+
+  void formatValue(std::ostream &os) const override {
+    sizeFormatter(os, *ArgBase::getDst<T>());
+  }
+
+  void usage(std::ostream &os) const override {
+    ArgBase::printFlag(os);
+    if (ArgBase::hasDefault) {
+      os << " [default = ";
+      sizeFormatter(os, Arg<T>::defVal);
+      os << "]\n";
+    } else {
+      os << " [required]\n";
+    }
+    ArgBase::printDesc(os);
+  }
+};
+
+template <typename T>
+SizeArg(char, T &, const char *, std::nullopt_t, const char * = nullptr)
+    -> SizeArg<std::decay_t<T>>;
+
+// Deduction guide for SizeArg<T> when defVal is provided as T directly
+template <typename T>
+SizeArg(char, T &, const char *, T, const char * = nullptr)
+    -> SizeArg<std::decay_t<T>>;
+
+template <typename... Args> class Parser {
+public:
+  std::array<ArgBase *, sizeof...(Args)> args;
+  std::tuple<Args...> storage;
+  static constexpr char HELP_FLAG = 'h';
+  static constexpr const char HELP_LONG_FLAG[] = "help";
+  static constexpr uintptr_t ALIGNMENT = 4;
+
+  Parser(Args &&...argList) : storage(std::forward<Args>(argList)...) {
+    [&]<size_t... Vs>(std::index_sequence<Vs...> seq) {
+      ((args[Vs] = &std::get<Vs>(storage), 0), ...);
+    }(std::make_index_sequence<sizeof...(Args)>());
+    doCheckFlags();
+  }
+
+  size_t size() const { return args.size(); }
+
+public:
+  void parse(int argc, const char *argv[]) const {
+    auto sz = size();
+    std::vector<unsigned char> parsed(sz, false);
+    for (int i = isFlag(argv[0]) ? 0 : 1; i < argc; i++) {
+      const char *argv0 = argv[i];
+      const char *argv1 = nullptr;
+      if (i + 1 < argc && !isFlag(argv[i + 1])) {
+        argv1 = argv[++i];
+      }
+      bool isLongFlag = argv0[1] == '-';
+      int matchIdx = -1;
+      for (size_t j = 0; j < sz; j++) {
+        if (isLongFlag) {
+          if (args[j]->longFlag && strcmp(argv0, args[j]->longFlag) == 0) {
+            matchIdx = j;
+            break;
+          }
+        } else if (args[j]->shortFlag && args[j]->shortFlag == argv0[1]) {
+          matchIdx = j;
+          break;
+        }
+      }
+      if (matchIdx < 0) {
         // special handling for -h and --help
-        if (strcmp(argv[i], kHelpFlag) == 0 ||
-            strcmp(argv[i], kHelpLongFlag) == 0) {
-          usage(std::cerr, !isFlag(argv[0]) ? argv[0] : nullptr);
+        if (argv[i][1] == HELP_FLAG ||
+            (argv[i][1] == '-' && strcmp(HELP_LONG_FLAG, argv[i] + 2) == 0)) {
+          usage(std::cerr, !isFlag(argv[0]) ? argv[0] : "");
           exit(0);
         } else {
           throw std::invalid_argument(std::string("Unknown flag: ") + argv[i]);
         }
-      }
-
-      auto &parseFlag = parsed[std::distance(args.cbegin(), it)];
-      if (parseFlag) {
+      } else if (parsed[matchIdx]) {
         throw std::invalid_argument(std::string("Duplicate flag: ") + argv[i]);
+      } else {
+        args[matchIdx]->parseValue(argv1);
+        parsed[matchIdx] = true;
       }
-      parseFlag = true;
-
-      // pass next argument as value(if it exists and is not a flag)
-      const char *value = nullptr;
-      if (i + 1 < argc && !isFlag(argv[i + 1])) {
-        value = argv[i + 1];
-        i++;
-      }
-      it->parseValue(value);
     }
-    // set all unparsed value to default
-    for (unsigned idx = 0; idx < args.size(); idx++) {
-      if (!parsed[idx]) {
-        args[idx].setDefault();
+
+    // set default values
+    for (size_t i = 0; i < parsed.size(); i++) {
+      if (!parsed[i]) {
+        args[i]->setDefault();
       }
     }
   }
 
-  void printAll(std::ostream &os) {
+  void printAll(std::ostream &os) const {
     os << "values:\n";
-    for (const Arg &arg : args) {
-      os << "  -" << arg.shortFlag;
-      if (!strEmpty(arg.longFlag)) {
-        os << "(--" << arg.longFlag << ')';
-      }
+    for (size_t i = 0; i < size(); i++) {
+      const auto *arg = args[i];
+      arg->printFlag(os);
       os << '\t';
-      arg.printVal(os);
+      arg->formatValue(os);
       os << '\n';
     }
+    os.flush();
   }
 
-  void usage(std::ostream &os, const char *programName) {
-    if (!programName) {
+  void usage(std::ostream &os, std::string_view programName) const {
+    if (programName.empty()) {
       programName = "(program name not provided)";
     }
     os << "Usage: " << programName << "\n";
-    for (const Arg &arg : args) {
-      arg.usage(os);
+    for (size_t i = 0; i < size(); i++) {
+      args[i]->usage(os);
     }
     os << "  -h(--help)\n"
        << "\tprint this help message" << std::endl;
   }
 
 private:
-  bool isFlag(const char *str) { return str && str[0] == '-'; }
-  std::vector<Arg> args;
+  void doCheckFlags() {
+    for (size_t i = 0; i < size(); i++) {
+      if (args[i]->shortFlag) {
+        if (args[i]->shortFlag == HELP_FLAG) {
+          throw std::invalid_argument("cannot manually set -h flag");
+        }
+        for (size_t j = i + 1; j < size(); j++) {
+          if (args[i]->shortFlag == args[j]->shortFlag) {
+            throw std::invalid_argument(std::string("duplicate flag: -") +
+                                        args[i]->shortFlag);
+          }
+        }
+      }
+      if (args[i]->longFlag) {
+        if (strcmp(HELP_LONG_FLAG, args[i]->longFlag) == 0) {
+          throw std::invalid_argument("cannot manually set --help flag");
+        }
+        for (size_t j = i + 1; j < size(); j++) {
+          if (args[j]->longFlag &&
+              strcmp(args[i]->longFlag, args[j]->longFlag) == 0) {
+            throw std::invalid_argument(std::string("duplicate flag: --") +
+                                        args[i]->longFlag);
+          }
+        }
+      }
+    }
+  }
 };
 
 #define VALIDATE(_pred)                                                        \
