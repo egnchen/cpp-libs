@@ -81,7 +81,7 @@ int main(void) {
 
 ## `args.h`
 
-A command line argument parser. Support all primitives, strings & enums, fully declarative & constexpr.
+A command line argument parser. Support all primitives, strings & enums.
 
 <details>
 <summary>Usage</summary>
